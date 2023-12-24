@@ -1,4 +1,26 @@
 use std::io::{Read, stdin, stdout, Write};
+use std::os::raw::{c_int, c_void};
+
+extern "C" {
+    fn syscall(num: c_int, ...) -> c_int;
+}
+
+fn generic_syscall(syscall_number: c_int, args: &[usize]) -> isize {
+    unsafe {
+        match args.len() {
+            0 => syscall(syscall_number) as isize,
+            1 => syscall(syscall_number, args[0]) as isize,
+            2 => syscall(syscall_number, args[0], args[1]) as isize,
+            3 => syscall(syscall_number, args[0], args[1], args[2]) as isize,
+            4 => syscall(syscall_number, args[0], args[1], args[2], args[3]) as isize,
+            5 => syscall(syscall_number, args[0], args[1], args[2], args[3], args[4]) as isize,
+            6 => syscall(syscall_number, args[0], args[1], args[2], args[3], args[4], args[5]) as isize,
+            7 => syscall(syscall_number, args[0], args[1], args[2], args[3], args[4], args[5], args[6]) as isize,
+            // Handle more arguments as needed
+            _ => -1,
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum Token {
@@ -17,10 +39,17 @@ enum Token {
     SYS,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum SyscallArgType {
+    Regular,
+    Pointer,
+    CellPointer,
+}
+
 fn main() {
     let mut data_pointer = 0usize;
     let mut instruction_pointer = 0usize;
-    let mut data = vec![0i8; u32::MAX as usize];
+    let mut data = vec![0u8; u32::MAX as usize];
     // Read in tokens
     let mut depth = 0usize;
     let mut tokens = std::fs::read_to_string(std::env::args().collect::<Vec<String>>().get(1).expect("No program was supplied!")).expect("Failed to read program!")
@@ -77,11 +106,55 @@ fn main() {
                 Token::DDP => { data_pointer -= 1 }
                 Token::INC => { data[data_pointer] += 1 }
                 Token::DEC => { data[data_pointer] -= 1 }
-                Token::OUT => { let buf = [data[data_pointer] as u8]; stdout().write(&buf).expect("Failed to write to STDOUT!"); }
-                Token::ACC => { let mut buf = [0; 1]; stdin().read(&mut buf).expect("Failed to read from STDIN!"); data[data_pointer] = buf[0] as i8; }
+                Token::OUT => {
+                    stdout().write(&data[data_pointer..data_pointer + 1]).expect("Failed to write to STDOUT!");
+                }
+                Token::ACC => {
+                    stdin().read(&mut data[data_pointer..data_pointer + 1]).expect("Failed to read from STDIN!");
+                }
                 Token::JFW { instruction_ref } => { instruction_pointer = if data[data_pointer] == 0 { *instruction_ref } else { instruction_pointer } }
                 Token::JBW { instruction_ref } => { instruction_pointer = if data[data_pointer] != 0 { *instruction_ref } else { instruction_pointer } }
-                Token::SYS => { panic!("The '%' syscall instruction, at index {instruction_pointer}, is not supported in interpretation mode!") }
+                // TODO: Fix bug, where the webserver cannot read any traffic/bind to port.
+                Token::SYS => {
+                    let code = data[data_pointer + 0] as usize;
+                    let arg_count = data[data_pointer + 1] as usize;
+                    let mut arguments: Vec<(SyscallArgType, usize, &[u8])> = Vec::new();
+                    let mut local_offset = data_pointer + 2;
+                    for i in 0..arg_count {
+                        let t = match data[local_offset + 0] {
+                            0 => SyscallArgType::Regular,
+                            1 => SyscallArgType::Pointer,
+                            2 => SyscallArgType::CellPointer,
+                            _ => { panic!("INVALID SYSCALL ARG TYPE: {}", data[local_offset]) }
+                        };
+                        let l = data[local_offset + 1] as usize;
+                        let b = &data[local_offset + 2..local_offset + 2 + l];
+                        arguments.push((t, l, b));
+                        local_offset += 2 + l;
+                    }
+                    // println!("Performing SYSCALL[{code}] wth args: {arguments:?}");
+                    let arguments = arguments.iter().map(|(t, l, b)| match t {
+                        SyscallArgType::Regular => {
+                            let mut buf = [0; std::mem::size_of::<usize>()];
+                            unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), buf[(std::mem::size_of::<usize>() - *l)..].as_mut_ptr(), *l) };
+                            usize::from_be_bytes(buf)
+                        }
+                        SyscallArgType::Pointer => { (b.as_ptr() as *const c_void) as usize }
+                        SyscallArgType::CellPointer => {
+                            let index = {
+                                let mut buf = [0; std::mem::size_of::<usize>()];
+                                unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), buf[(std::mem::size_of::<usize>() - *l)..].as_mut_ptr(), *l) };
+                                usize::from_be_bytes(buf)
+                            };
+                            (data[index..].as_ptr() as *const c_void) as usize
+                        }
+                    }).collect::<Vec<usize>>();
+                    // println!("------| ENCODED: {arguments:?}");
+                    let ret = generic_syscall(code as c_int, arguments.as_slice());
+                    for i in 0..std::mem::size_of::<usize>() {
+                        data[data_pointer + i] = ((ret >> i) & 0xff) as u8;
+                    }
+                }
             }
         }
         instruction_pointer += 1;
