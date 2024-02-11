@@ -1,0 +1,2 @@
+# RustFuck
+Systemf in rust.
