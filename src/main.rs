@@ -8,7 +8,7 @@ extern "C" {
     fn syscall(num: c_int, ...) -> c_int;
 }
 
-fn preserving_syscall(syscall_number: c_int, args: &[usize]) -> isize {
+fn dynamic_syscall(syscall_number: c_int, args: &[usize]) -> isize {
     unsafe {
         let mut regs = [0; 6];
         std::ptr::copy_nonoverlapping(args.as_ptr(), regs.as_mut_ptr(), args.len());
@@ -148,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }).collect::<Vec<usize>>();
                     // Call
-                    let sys = preserving_syscall(code as c_int, arguments.as_slice());
+                    let sys = dynamic_syscall(code as c_int, arguments.as_slice());
                     if sys == -1 {
                         error!("{:?}", std::io::Error::last_os_error())
                     }
