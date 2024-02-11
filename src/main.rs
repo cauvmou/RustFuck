@@ -10,11 +10,14 @@ extern "C" {
 
 fn preserving_syscall(syscall_number: c_int, args: &[usize], regs: &mut [usize]) -> isize {
     unsafe {
+        trace!("SYSCALL[{syscall_number}] {args:?}");
+        let mut regs = [0; 6];
         std::ptr::copy_nonoverlapping(args.as_ptr(), regs.as_mut_ptr(), args.len()); // Preserve registers between syscalls.
-        trace!("SYSCALL[{syscall_number}] {regs:?}");
         syscall(syscall_number, regs[0], regs[1], regs[2], regs[3], regs[4], regs[5]) as isize
     }
 }
+
+const DATA_LENGTH: usize = 30_000;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum Token {
@@ -48,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
     // Setup variables
     let mut data_pointer = 0usize;
     let mut instruction_pointer = 0usize;
-    let mut data = vec![0u8; 30_000];
+    let mut data = vec![0u8; DATA_LENGTH];
     let mut sys_registers = [0usize; 6];
     // Read in tokens
     let mut depth = 0usize;
@@ -96,8 +99,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
     while instruction_pointer != tokens.len() {
         if let Some(token) = tokens.get(instruction_pointer) {
             match token {
-                Token::Idp => { data_pointer += 1 }
-                Token::Ddp => { data_pointer -= 1 }
+                Token::Idp => {
+                    //data_pointer = if data_pointer+1 >= DATA_LENGTH {0} else {data_pointer+1};
+                    data_pointer += 1
+                }
+                Token::Ddp => {
+                    //data_pointer = if data_pointer == 0 {DATA_LENGTH-1} else {data_pointer-1};
+                    data_pointer -= 1
+                }
                 Token::Inc => { data[data_pointer] += 1 }
                 Token::Dec => { data[data_pointer] -= 1 }
                 Token::Out => {
@@ -110,12 +119,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
                 Token::Jbw { instruction_ref } => { instruction_pointer = if data[data_pointer] != 0 { *instruction_ref } else { instruction_pointer } }
                 Token::Sys => {
                     // Extract arguments for call
-                    let code = data[data_pointer + 0] as usize;
+                    let code = data[data_pointer] as usize;
                     let arg_count = data[data_pointer + 1] as usize;
                     let mut arguments: Vec<(SyscallArgType, usize, *mut u8)> = Vec::new();
                     let mut local_offset = data_pointer + 2;
                     for _ in 0..arg_count {
-                        let t = match data[local_offset + 0] {
+                        let t = match data[local_offset] {
                             0 => SyscallArgType::Regular,
                             1 => SyscallArgType::Pointer,
                             2 => SyscallArgType::CellPointer,
@@ -128,14 +137,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
                     }
                     trace!("Performing SYSCALL[{code}] wth args: {arguments:?}");
                     // Parse arguments to actual values
-                    let arguments = arguments.iter().map(|(t, l, b)| match t {
+                    let arguments = arguments.iter().map(|(syscall_arg_type, length, bytes)| match syscall_arg_type {
                         SyscallArgType::Regular => {
                             let mut buf = [0; std::mem::size_of::<usize>()];
-                            unsafe { std::ptr::copy_nonoverlapping(*b as *const u8, buf[(std::mem::size_of::<usize>() - *l)..].as_mut_ptr(), *l) };
+                            unsafe { std::ptr::copy_nonoverlapping(*bytes as *const u8, buf[(std::mem::size_of::<usize>() - *length)..].as_mut_ptr(), *length) };
                             usize::from_be_bytes(buf)
                         }
                         SyscallArgType::Pointer => {
-                            let ptr = *b as usize;
+                            let ptr = *bytes as usize;
                             let v = ptr as *const c_void;
                             let mut array = [0u8; 16];
                             unsafe { std::ptr::copy_nonoverlapping(v as *const u8, array.as_mut_ptr(), 16) };
@@ -145,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
                         SyscallArgType::CellPointer => {
                             let index = {
                                 let mut buf = [0; std::mem::size_of::<usize>()];
-                                unsafe { std::ptr::copy_nonoverlapping(*b as *const u8, buf[(std::mem::size_of::<usize>() - *l)..].as_mut_ptr(), *l) };
+                                unsafe { std::ptr::copy_nonoverlapping(*bytes as *const u8, buf[(std::mem::size_of::<usize>() - *length)..].as_mut_ptr(), *length) };
                                 usize::from_be_bytes(buf)
                             };
                             (data.as_ptr() as *const c_void) as usize + index
@@ -158,8 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
                     if sys == -1 {
                         error!("{:?}", std::io::Error::last_os_error())
                     }
-                    let ret = sys.to_ne_bytes();
-                    unsafe { std::ptr::copy_nonoverlapping(ret.as_ptr(), data[data_pointer..].as_mut_ptr(), ret.len()) };
+                    trace!("Dumping value {sys:?} to data[{data_pointer}]");
+                    data[data_pointer] = sys as u8;
                 }
             }
         }
