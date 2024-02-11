@@ -8,11 +8,10 @@ extern "C" {
     fn syscall(num: c_int, ...) -> c_int;
 }
 
-fn preserving_syscall(syscall_number: c_int, args: &[usize], regs: &mut [usize]) -> isize {
+fn preserving_syscall(syscall_number: c_int, args: &[usize]) -> isize {
     unsafe {
-        trace!("SYSCALL[{syscall_number}] {args:?}");
         let mut regs = [0; 6];
-        std::ptr::copy_nonoverlapping(args.as_ptr(), regs.as_mut_ptr(), args.len()); // Preserve registers between syscalls.
+        std::ptr::copy_nonoverlapping(args.as_ptr(), regs.as_mut_ptr(), args.len());
         syscall(syscall_number, regs[0], regs[1], regs[2], regs[3], regs[4], regs[5]) as isize
     }
 }
@@ -43,7 +42,7 @@ enum SyscallArgType {
     CellPointer,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>>{
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     simple_logger::init()?;
 
     // Read args
@@ -52,7 +51,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
     let mut data_pointer = 0usize;
     let mut instruction_pointer = 0usize;
     let mut data = vec![0u8; DATA_LENGTH];
-    let mut sys_registers = [0usize; 6];
     // Read in tokens
     let mut depth = 0usize;
     let mut tokens = std::fs::read_to_string(std::env::args().collect::<Vec<String>>().last().expect("No program was supplied!")).expect("Failed to read program!")
@@ -99,14 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
     while instruction_pointer != tokens.len() {
         if let Some(token) = tokens.get(instruction_pointer) {
             match token {
-                Token::Idp => {
-                    //data_pointer = if data_pointer+1 >= DATA_LENGTH {0} else {data_pointer+1};
-                    data_pointer += 1
-                }
-                Token::Ddp => {
-                    //data_pointer = if data_pointer == 0 {DATA_LENGTH-1} else {data_pointer-1};
-                    data_pointer -= 1
-                }
+                Token::Idp => { data_pointer += 1 }
+                Token::Ddp => { data_pointer -= 1 }
                 Token::Inc => { data[data_pointer] += 1 }
                 Token::Dec => { data[data_pointer] -= 1 }
                 Token::Out => {
@@ -144,12 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
                             usize::from_be_bytes(buf)
                         }
                         SyscallArgType::Pointer => {
-                            let ptr = *bytes as usize;
-                            let v = ptr as *const c_void;
-                            let mut array = [0u8; 16];
-                            unsafe { std::ptr::copy_nonoverlapping(v as *const u8, array.as_mut_ptr(), 16) };
-                            debug!("{array:?}");
-                            ptr
+                            *bytes as usize
                         }
                         SyscallArgType::CellPointer => {
                             let index = {
@@ -160,10 +147,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
                             (data.as_ptr() as *const c_void) as usize + index
                         }
                     }).collect::<Vec<usize>>();
-                    trace!("ENCODED: {arguments:?}");
                     // Call
-                    let sys = preserving_syscall(code as c_int, arguments.as_slice(), &mut sys_registers);
-                    trace!("RESULT: {sys}");
+                    let sys = preserving_syscall(code as c_int, arguments.as_slice());
                     if sys == -1 {
                         error!("{:?}", std::io::Error::last_os_error())
                     }
