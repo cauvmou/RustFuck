@@ -1,8 +1,11 @@
 #![allow(arithmetic_overflow)]
 
+mod lexer;
+
 use std::io::{Read, stdin, stdout, Write};
 use std::os::raw::{c_int, c_void};
 use log::{debug, error, trace};
+use crate::lexer::{Token, tokenize};
 
 extern "C" {
     fn syscall(num: c_int, ...) -> c_int;
@@ -18,24 +21,7 @@ fn dynamic_syscall(syscall_number: c_int, args: &[usize]) -> isize {
 
 const DATA_LENGTH: usize = 30_000;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-enum Token {
-    Idp,
-    Ddp,
-    Inc,
-    Dec,
-    Out,
-    Acc,
-    Jfw {
-        instruction_ref: usize
-    },
-    Jbw {
-        instruction_ref: usize
-    },
-    Sys,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum SyscallArgType {
     Regular,
     Pointer,
@@ -52,47 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut instruction_pointer = 0usize;
     let mut data = vec![0u8; DATA_LENGTH];
     // Read in tokens
-    let mut depth = 0usize;
-    let mut tokens = std::fs::read_to_string(std::env::args().collect::<Vec<String>>().last().expect("No program was supplied!")).expect("Failed to read program!")
-        .chars().filter_map(|c| match c {
-        '>' => Some(Token::Idp),
-        '<' => Some(Token::Ddp),
-        '+' => Some(Token::Inc),
-        '-' => Some(Token::Dec),
-        '.' => Some(Token::Out),
-        ',' => Some(Token::Acc),
-        '[' => Some(Token::Jfw {
-            instruction_ref: {
-                let d = depth;
-                depth += 1;
-                d
-            }
-        }),
-        ']' => Some(Token::Jbw {
-            instruction_ref: {
-                depth -= 1;
-                depth
-            }
-        }),
-        '%' => Some(Token::Sys),
-        _ => None
-    }).collect::<Vec<Token>>();
-    // Cross reference jumps
-    let tokens_clone = tokens.clone();
-    tokens.iter_mut().enumerate().for_each(|(index, t)| if let Token::Jfw { instruction_ref } = t {
-        let r = *instruction_ref;
-        *instruction_ref = tokens_clone.iter().enumerate().position(|(i, t)| match t {
-            Token::Jbw { instruction_ref } => { *instruction_ref == r && i > index }
-            _ => false
-        }).unwrap_or_else(|| panic!("No closing bracket for '[' at {} (NOTE: Index represents the nth instruction, this may not be the actual character!)", index + 1));
-    });
-    let tokens_clone = tokens.clone();
-    tokens.iter_mut().enumerate().for_each(|(index, t)| if let Token::Jbw { instruction_ref } = t {
-        *instruction_ref = tokens_clone.iter().position(|t| match t {
-            Token::Jfw { instruction_ref } => { *instruction_ref == index }
-            _ => false
-        }).unwrap_or_else(|| panic!("No opening bracket for ']' at {} (NOTE: Index represents the nth instruction, this may not be the actual character!)", index + 1));
-    });
+    let tokens = tokenize(&std::fs::read_to_string(std::env::args().collect::<Vec<String>>().last().expect("No program was supplied!")).expect("Failed to read program!")).unwrap();
     // Interpret it
     while instruction_pointer != tokens.len() {
         if let Some(token) = tokens.get(instruction_pointer) {

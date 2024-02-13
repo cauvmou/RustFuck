@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 simple_logger = "4.3.3"
 log = "0.4.20"
+clap = { version = "4.5.0", features = ["derive"] }
 
 [profile.dev]
 overflow-checks = false
